@@ -166,11 +166,20 @@ class App:
             if self.pin is not None:
                 self.x11.set_cursor_position(*self.pin)
             return
-        if self.receiving or not self.link.connected or self.capture.buttons_down:
-            # Never across while dragging, and never while the PC is driving this machine.
+        if not self.link.connected or self.capture.buttons_down:
+            # Never across while dragging.
             return
+        # This runs while the PC drives this machine too: the PC's moves come through XTEST and
+        # never arrive here, so this is this machine's own hand pushing out.
         outcome = self.edge.feed(self._monitors_now(), self.x11.cursor_position(), dx, dy)
         if outcome.action == return_edge.CROSS:
+            if self.receiving:
+                # As the Mac does: the PC's input goes home first, and this hand follows it across.
+                if not self.receiver.send_home():
+                    LOGGER.warning("cannot cross: the PC is driving this machine and cannot be reached")
+                    self._rearm()
+                    return
+                self.receiving = False
             if not self.link.set_redirecting(True, outcome.edge, outcome.offset):
                 self._rearm()
 
