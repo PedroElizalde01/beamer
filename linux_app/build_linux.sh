@@ -33,10 +33,13 @@ cp -a "$out/beamer" "$deb/opt/beamer"
 ln -s /opt/beamer/beamer "$deb/usr/bin/beamer"
 desktop_entry beamer > "$deb/usr/share/applications/beamer.desktop"
 cp "$repo/Beamer.png" "$deb/usr/share/icons/hicolor/256x256/apps/beamer.png"
+# What apt reports as the space it takes, in KiB.
+installed_kib="$(du -sk --exclude=DEBIAN "$deb" | cut -f1)"
 cat > "$deb/DEBIAN/control" <<EOF
 Package: beamer
 Version: $version
 Architecture: amd64
+Installed-Size: $installed_kib
 Maintainer: $maintainer
 Depends: xclip
 Section: utils
