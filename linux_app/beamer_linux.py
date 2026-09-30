@@ -101,8 +101,6 @@ class App:
         self.cfg = cfg
         self.x11 = x11
         self.receiving = False
-        self.pin = None
-        self._carry = [0.0, 0.0]
         self._monitors, self._monitors_at = None, 0.0
         self._rearm()
         self.link = link.Link(cfg, clipboard_linux, x11, self._on_redirect)
@@ -150,21 +148,14 @@ class App:
     # -- capture callbacks, on the capture thread ------------------------------------------------
 
     def _on_redirect(self, value, pin):
-        self.pin = pin
-        self._carry = [0.0, 0.0]
         if not value:
             self._rearm()
         return self.capture.grab(value)
 
     def _on_motion(self, dx, dy):
         if self.link.redirecting:
-            x, y = dx + self._carry[0], dy + self._carry[1]
-            whole_x, whole_y = int(x), int(y)
-            self._carry = [x - whole_x, y - whole_y]
-            if whole_x or whole_y:
-                self.link.send_input({"type": protocol.MSG_MOUSEMOVE, "data": {"dx": whole_x, "dy": whole_y}})
-            if self.pin is not None:
-                self.x11.set_cursor_position(*self.pin)
+            # Whole pixels: while grabbed, capture measures moves on the screen itself.
+            self.link.send_input({"type": protocol.MSG_MOUSEMOVE, "data": {"dx": int(dx), "dy": int(dy)}})
             return
         if not self.link.connected or self.capture.buttons_down:
             # Never across while dragging.

@@ -1,10 +1,12 @@
 """This machine's own keyboard and pointer, read on one thread with its own X connection.
 
-XInput2 raw events carry the hand's movement even when the pointer is pinned against a screen
-edge or warped back, which is what the edge push and the pinned pointer while redirecting both
-need. While input goes to the PC the keyboard and pointer are grabbed, so nothing here sees
-them, and keys and buttons are read from the grab's core events instead: those carry the
-autorepeat and the wheel clicks a touchpad's scrolling becomes, which raw events do not.
+XInput2 raw events carry the hand's movement even when the pointer is held against a screen
+edge, which is what the edge push needs. While input goes to the PC the keyboard and pointer are
+grabbed, so nothing here sees them, and everything is read from the grab's core events instead:
+the X server stops sending raw events to the client that holds the grab. The pointer is hidden
+and kept at the middle of the screen, and each move is measured from there, so no screen edge
+ever stops it. Core events also carry the autorepeat and the wheel clicks a touchpad's scrolling
+becomes, which raw events do not.
 """
 
 import ctypes
@@ -18,7 +20,7 @@ from x11 import X, XI
 
 LOGGER = logging.getLogger(__name__)
 
-GenericEvent, KeyPress, KeyRelease, ButtonPress, ButtonRelease = 35, 2, 3, 4, 5
+GenericEvent, KeyPress, KeyRelease, ButtonPress, ButtonRelease, MotionNotify = 35, 2, 3, 4, 5, 6
 XI_RawKeyPress, XI_RawKeyRelease, XI_RawButtonPress, XI_RawButtonRelease, XI_RawMotion = 13, 14, 15, 16, 17
 XIAllMasterDevices, XIAllDevices = 1, 0
 GrabModeAsync, GrabSuccess = 1, 0
@@ -70,6 +72,11 @@ class XIEventMask(ctypes.Structure):
     _fields_ = [("deviceid", ctypes.c_int), ("mask_len", ctypes.c_int), ("mask", ctypes.POINTER(ctypes.c_ubyte))]
 
 
+class XColor(ctypes.Structure):
+    _fields_ = [("pixel", ctypes.c_ulong), ("red", ctypes.c_ushort), ("green", ctypes.c_ushort),
+                ("blue", ctypes.c_ushort), ("flags", ctypes.c_char), ("pad", ctypes.c_char)]
+
+
 class XIDeviceInfo(ctypes.Structure):
     _fields_ = [
         ("deviceid", ctypes.c_int), ("name", ctypes.c_char_p), ("use", ctypes.c_int),
@@ -86,6 +93,11 @@ X.XGrabKeyboard.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctype
 X.XGrabPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
                            ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
 X.XUngrabKeyboard.argtypes = X.XUngrabPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+X.XCreateBitmapFromData.restype = ctypes.c_ulong
+X.XCreateBitmapFromData.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_char_p, ctypes.c_uint, ctypes.c_uint]
+X.XCreatePixmapCursor.restype = ctypes.c_ulong
+X.XCreatePixmapCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(XColor),
+                                  ctypes.POINTER(XColor), ctypes.c_uint, ctypes.c_uint]
 X.XkbSetDetectableAutoRepeat.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
 XI.XIQueryVersion.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
 XI.XISelectEvents.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(XIEventMask), ctypes.c_int]
@@ -129,7 +141,10 @@ class Capture:
         self._stop = threading.Event()
         self._tap_at = 0.0
         self._tap_clean = False
+        self._trigger_held = False
         self._keys_down = {}
+        # Where the grabbed pointer is kept, and where it goes back to when the grab ends.
+        self._center = self._home = None
         self._thread = None
 
     def start(self):
@@ -153,10 +168,17 @@ class Capture:
     def _apply_grab(self):
         if self._want_grab and not self._grabbed:
             keyboard = X.XGrabKeyboard(self._display, self._root, 0, GrabModeAsync, GrabModeAsync, 0)
-            pointer = X.XGrabPointer(self._display, self._root, 0, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, 0, 0, 0)
+            pointer = X.XGrabPointer(self._display, self._root, 0, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync,
+                                     0, self._blank, 0)
             if keyboard == GrabSuccess and pointer == GrabSuccess:
                 self._grabbed = True
                 self._keys_down.clear()
+                # Raw button releases stop while grabbed, so a button remembered now would stay down.
+                self.buttons_down.clear()
+                self._home = x11.cursor_position()
+                screen = x11.monitors()[0]
+                self._center = (screen.x + screen.width // 2, screen.y + screen.height // 2)
+                self._warp(*self._center)
             else:
                 # Another program holds a grab, an open menu say: stay here rather than half-grabbed.
                 LOGGER.warning("Could not grab the keyboard (%s) and pointer (%s)", keyboard, pointer)
@@ -167,8 +189,14 @@ class Capture:
             X.XUngrabKeyboard(self._display, 0)
             X.XUngrabPointer(self._display, 0)
             self._grabbed = False
+            self.buttons_down.clear()
+            # Back where it left; a crossing home then places it where it arrives instead.
+            self._warp(*self._home)
         X.XFlush(self._display)
         self._grab_done.set()
+
+    def _warp(self, x, y):
+        X.XWarpPointer(self._display, 0, self._root, 0, 0, 0, 0, int(x), int(y))
 
     def _run(self):
         self._display = x11.open_display()
@@ -176,7 +204,8 @@ class Capture:
         opcode, event, error = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
         if not X.XQueryExtension(self._display, b"XInputExtension", ctypes.byref(opcode), ctypes.byref(event), ctypes.byref(error)):
             raise OSError("the X server has no XInput extension")
-        # 2.2 or later, or raw events stop reaching this client while it holds a grab.
+        # 2.2, so raw events reach this client whatever another client grabs. Not while this one
+        # holds the grab, which is why a grab reads core events.
         major, minor = ctypes.c_int(2), ctypes.c_int(2)
         XI.XIQueryVersion(self._display, ctypes.byref(major), ctypes.byref(minor))
         self._xtest = self._xtest_devices()
@@ -187,6 +216,10 @@ class Capture:
         mask = XIEventMask(XIAllMasterDevices, 4, mask_bytes)
         XI.XISelectEvents(self._display, self._root, ctypes.byref(mask), 1)
         X.XkbSetDetectableAutoRepeat(self._display, 1, None)
+        # An empty cursor for the grab, so the pointer kept at the middle of this screen is not seen.
+        empty = X.XCreateBitmapFromData(self._display, self._root, b"\0", 1, 1)
+        black = XColor()
+        self._blank = X.XCreatePixmapCursor(self._display, empty, empty, ctypes.byref(black), ctypes.byref(black), 0, 0)
         X.XFlush(self._display)
         fd = X.XConnectionNumber(self._display)
         ev = XEvent()
@@ -230,9 +263,21 @@ class Capture:
             self._grabbed_key(ev.xkey, ev.type == KeyPress)
         elif self._grabbed and ev.type in (ButtonPress, ButtonRelease):
             self._grabbed_button(ev.xkey.keycode, ev.type == ButtonPress)
+        elif self._grabbed and ev.type == MotionNotify:
+            self._grabbed_motion(ev.xkey.x_root, ev.xkey.y_root)
+
+    def _grabbed_motion(self, x, y):
+        """A move away from the middle of the screen is the hand's movement; the pointer goes back
+        to the middle for the next one. The warp's own event lands on the middle and reads as none."""
+        dx, dy = x - self._center[0], y - self._center[1]
+        if dx or dy:
+            self.on_motion(float(dx), float(dy))
+            self._warp(*self._center)
 
     def _raw(self, evtype, raw):
         if evtype == XI_RawMotion:
+            if self._grabbed:
+                return
             dx, dy = motion_of(raw)
             if dx or dy:
                 self.on_motion(dx, dy)
@@ -246,7 +291,10 @@ class Capture:
         if keycode != self.trigger_code:
             self._tap_clean = False
             return
-        if not down:
+        # Held down, the key repeats as presses with no release between: one tap, not many.
+        repeat = down and self._trigger_held
+        self._trigger_held = down
+        if not down or repeat:
             return
         now = time.monotonic()
         if self._tap_clean and now - self._tap_at <= DOUBLE_TAP_SECONDS:
@@ -257,6 +305,8 @@ class Capture:
 
     def _grabbed_key(self, event, down):
         keycode = event.keycode
+        # Raw key events stop while this client holds the grab, so the way home is watched here.
+        self._trigger(keycode, down)
         if keycode == self.trigger_code:
             return
         if not down:
