@@ -27,6 +27,9 @@ GrabModeAsync, GrabSuccess = 1, 0
 POINTER_GRAB_MASK = (1 << 2) | (1 << 3) | (1 << 6)  # ButtonPress, ButtonRelease, PointerMotion
 ShiftMask, Mod5Mask = 1 << 0, 1 << 7
 DOUBLE_TAP_SECONDS = 0.4
+# How far the grabbed pointer may wander from the middle before it is put back. Well inside half a
+# screen, so no edge ever stops a move.
+RECENTER_PX = 200
 WHEEL = {4: (1.0, 0.0), 5: (-1.0, 0.0), 6: (0.0, -1.0), 7: (0.0, 1.0)}
 BUTTON_NAMES = {1: "left", 2: "middle", 3: "right", 8: "back", 9: "forward"}
 
@@ -145,6 +148,10 @@ class Capture:
         self._keys_down = {}
         # Where the grabbed pointer is kept, and where it goes back to when the grab ends.
         self._center = self._home = None
+        # The grabbed pointer's last known place, None until the grab's first warp has landed, and
+        # whether a warp to the middle is still on its way.
+        self._last = None
+        self._warping = False
         self._thread = None
 
     def start(self):
@@ -178,6 +185,7 @@ class Capture:
                 self._home = x11.cursor_position()
                 screen = x11.monitors()[0]
                 self._center = (screen.x + screen.width // 2, screen.y + screen.height // 2)
+                self._last, self._warping = None, True
                 self._warp(*self._center)
             else:
                 # Another program holds a grab, an open menu say: stay here rather than half-grabbed.
@@ -267,11 +275,24 @@ class Capture:
             self._grabbed_motion(ev.xkey.x_root, ev.xkey.y_root)
 
     def _grabbed_motion(self, x, y):
-        """A move away from the middle of the screen is the hand's movement; the pointer goes back
-        to the middle for the next one. The warp's own event lands on the middle and reads as none."""
-        dx, dy = x - self._center[0], y - self._center[1]
+        """Each move is measured from the last place the pointer was seen, and the pointer goes back
+        to the middle only once it has wandered off, as Synergy does. Events queued before a warp
+        still carry places from before it, so they are measured on from the last one; the warp's own
+        event, landing on the middle, is where measuring starts again. Until the grab's first warp
+        lands, a place is where the pointer was at the edge, not a move, and counting one sent the
+        PC's pointer across its screen."""
+        if self._warping and (x, y) == self._center:
+            self._warping = False
+            self._last = self._center
+            return
+        if self._last is None:
+            return
+        dx, dy = x - self._last[0], y - self._last[1]
+        self._last = (x, y)
         if dx or dy:
             self.on_motion(float(dx), float(dy))
+        if not self._warping and (abs(x - self._center[0]) > RECENTER_PX or abs(y - self._center[1]) > RECENTER_PX):
+            self._warping = True
             self._warp(*self._center)
 
     def _raw(self, evtype, raw):
