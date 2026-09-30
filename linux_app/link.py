@@ -36,6 +36,8 @@ class Link:
         self.on_status = on_status or (lambda text: LOGGER.info("%s", text))
         # `on_arrangement(mac_edge, set_at)` when the PC moves the border between the machines.
         self.on_arrangement = None
+        # `on_arrival(edge or None, x, y)` when the PC sends input home: where the pointer landed.
+        self.on_arrival = None
         self.redirecting = False
         self._sock = None
         self._session = None
@@ -59,6 +61,10 @@ class Link:
         for target, name in ((self._connect_worker, "connect"), (self._reader, "reader"),
                              (self._writer, "writer"), (self._watchdog, "watchdog")):
             threading.Thread(target=target, name=f"Beamer-{name}", daemon=True).start()
+
+    def reconnect(self):
+        """Drop the connection so the next one uses the settings as they are now."""
+        self._fail("the pairing changed")
 
     def stop(self):
         self.set_redirecting(False)
@@ -239,9 +245,14 @@ class Link:
     def _switch_home(self, edge, offset):
         """The PC's pointer was pushed back through its edge: come home, landing where it left."""
         self.set_redirecting(False)
-        if edge in return_edge.EDGES and isinstance(offset, (int, float)) and not isinstance(offset, bool):
+        crossed = edge in return_edge.EDGES and isinstance(offset, (int, float)) and not isinstance(offset, bool)
+        if crossed:
             x, y = return_edge.arrival_position(self.desktop.monitors(), edge, offset)
             self.desktop.set_cursor_position(x, y)
+        else:
+            x, y = self.desktop.cursor_position()
+        if self.on_arrival is not None:
+            self.on_arrival(edge if crossed else None, x, y)
 
     def _watchdog(self):
         while not self._stop.wait(0.1):
