@@ -14,6 +14,27 @@ unchanged. What is Linux-shaped (input capture and injection, clipboard, tray) l
 - Inbound TCP 24820 and UDP 24821 open on this machine, if a firewall is on:
   `sudo ufw allow 24820/tcp && sudo ufw allow 24821/udp`
 
+## Install
+
+From the fork's releases page, either:
+
+- **.deb** (Ubuntu, Pop!_OS, Debian): `sudo apt install ./beamer_<version>_amd64.deb`, then open
+  Beamer from the app menu, or run `beamer`.
+- **AppImage** (any distribution): `chmod +x Beamer-<version>-x86_64.AppImage` and run it. It
+  needs `xclip` for the clipboard, and libfuse2 to start (`sudo apt install xclip libfuse2`; on
+  Ubuntu 24.04 the package is `libfuse2t64`).
+
+Both carry their own Python, Qt and fonts.
+
+## Build the packages
+
+    .venv/bin/pip install pyinstaller pyinstaller-hooks-contrib
+    PYTHON=.venv/bin/python linux_app/build_linux.sh
+
+They land in `linux_app/dist`. The first run downloads appimagetool into `linux_app/build`.
+Pushing a tag such as `v1.4.3-linux1` builds both on GitHub Actions and attaches them to that
+tag's release (`.github/workflows/linux-packages.yml`).
+
 ## Run from source
 
     python3 -m venv --system-site-packages .venv
