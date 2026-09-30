@@ -314,6 +314,7 @@ class CrossingPageTest(unittest.TestCase):
         self.app = QApplication.instance() or QApplication([])
         import diagram
         import kvm_bridge_win
+        import peer
 
         self.reflect = kvm_bridge_win.WindowsApplication._reflect_ways
         self.host = QWidget()
@@ -331,6 +332,7 @@ class CrossingPageTest(unittest.TestCase):
             edge_unlearned=QWidget(self.host),
             arrangement_diagram=diagram.ArrangementDiagram(),
             resistance_strip=diagram.PushStrip(),
+            peer=peer.MAC,
         )
         for button in self.page.part_buttons.values():
             button.setCheckable(True)

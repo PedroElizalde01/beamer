@@ -273,7 +273,7 @@ class Window(QWidget):
         self.paired_line = widgets.label("", "note", wrap=True)
         module.body.addWidget(self.paired_line)
         module.body.addWidget(widgets.label(
-            "On your PC, open Beamer and press Pair a Mac. It appears below while its code is on screen.",
+            "On your PC, open Beamer and press its Pair button. It appears below while its code is on screen.",
             "small", wrap=True))
         self.pc_list = QListWidget()
         self.pc_list.setMaximumHeight(96)
@@ -344,8 +344,8 @@ class Window(QWidget):
         self.pair_button.setEnabled(True)
         self.code_entry.clear()
         if isinstance(result, Exception):
-            reasons = {pairing.ERROR_REFUSED: "The code was not right. Press Pair a Mac on your PC for a new one.",
-                       pairing.ERROR_NOT_PAIRING: "Your PC is no longer showing a code. Press Pair a Mac there again.",
+            reasons = {pairing.ERROR_REFUSED: "The code was not right. Press Pair on your PC for a new one.",
+                       pairing.ERROR_NOT_PAIRING: "Your PC is no longer showing a code. Press Pair there again.",
                        "no_answer": "Your PC did not answer. Is Beamer open there, with its code showing?"}
             self.pair_note.setText(reasons.get(str(result), f"Pairing failed: {result}"))
             return

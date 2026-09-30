@@ -39,7 +39,7 @@ class PairingOutcomeWindowTest(unittest.TestCase):
         self.window._refresh_pairing()
         self.assertEqual(
             self.window.pair_note.text(),
-            "The Mac runs a different version of Beamer. Update Beamer on both machines, then pair again.",
+            "The other computer runs a different version of Beamer. Update Beamer on both machines, then pair again.",
         )
 
     def test_a_mac_that_had_the_wrong_code_ends_the_code(self):

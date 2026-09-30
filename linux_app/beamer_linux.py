@@ -98,7 +98,7 @@ def pair(args):
     discovery.start()
     if args.host:
         discovery.find(args.host)
-    print("On the PC, open Beamer and press Pair a Mac. Waiting for it to show a code...")
+    print("On the PC, open Beamer and press its Pair button. Waiting for it to show a code...")
     deadline = time.monotonic() + 60
     pcs = []
     while time.monotonic() < deadline and not pcs:

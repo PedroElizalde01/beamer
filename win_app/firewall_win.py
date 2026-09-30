@@ -162,8 +162,10 @@ def interpret(payload: dict, exe: str, port: int, elevated: bool = True) -> Fire
     )
 
 
-def advise(status: FirewallStatus) -> Advice:
-    """One sentence a non-technical person can act on, and the one button that fixes it."""
+def advise(status: FirewallStatus, peer=None) -> Advice:
+    """One sentence a non-technical person can act on, and the one button that fixes it. `peer`
+    (peer.Peer) names the machine that connects in, a Mac when not given."""
+    name = peer.name if peer is not None else "Mac"
     port = status.port
     rule_profiles = ("Private",) + (("Domain",) if "DomainAuthenticated" in status.lan_profiles else ())
     if status.error:
@@ -179,7 +181,7 @@ def advise(status: FirewallStatus) -> Advice:
         )
     elif not status.allowed:
         advice = Advice(
-            f"Windows Firewall has no rule letting your Mac reach Beamer on port {port}, so the Mac will say "
+            f"Windows Firewall has no rule letting your {name} reach Beamer on port {port}, so the {name} will say "
             "Windows is unreachable. This happens when the installer was run without administrator rights. "
             "Fixing it adds the rule for private networks.",
             "Fix the firewall",
@@ -190,7 +192,7 @@ def advise(status: FirewallStatus) -> Advice:
         names = ", ".join(alias for _, alias in status.public_interfaces if alias) or "this network"
         advice = Advice(
             f"Windows treats {names} as a public network, so Beamer's firewall rule does not apply on it and "
-            "your Mac cannot get in. Trusting it marks the network as private, which lets the Mac in without "
+            f"your {name} cannot get in. Trusting it marks the network as private, which lets the {name} in without "
             "opening the port on every other network this PC joins.",
             "Trust this network",
             "trust",
@@ -206,8 +208,8 @@ def advise(status: FirewallStatus) -> Advice:
         )
     elif not status.pairing_allowed:
         advice = Advice(
-            f"Windows Firewall lets your Mac reach Beamer on port {port}, but there is no rule for the "
-            f"pairing beacon on UDP {PAIRING_PORT}, so a Mac that has not been set up by hand will never "
+            f"Windows Firewall lets your {name} reach Beamer on port {port}, but there is no rule for the "
+            f"pairing beacon on UDP {PAIRING_PORT}, so a {name} that has not been set up by hand will never "
             "see this PC in its list. Installs made before pairing existed are missing it. Fixing it adds "
             "the missing rule and leaves the working one alone.",
             "Fix the firewall",
@@ -217,7 +219,7 @@ def advise(status: FirewallStatus) -> Advice:
     else:
         where = "this private network" if "Private" in status.lan_profiles else "this network"
         return Advice(
-            f"Windows Firewall lets your Mac reach Beamer on port {port} on {where}, and lets a new Mac "
+            f"Windows Firewall lets your {name} reach Beamer on port {port} on {where}, and lets a new {name} "
             "discover this PC.",
             "Check again",
             "check",

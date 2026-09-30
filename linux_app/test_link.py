@@ -70,6 +70,7 @@ def main():
     client.start()
     try:
         assert wait_for(lambda: client.connected), "never connected"
+        assert server.peer_platform == "linux", "the hello did not say this is Linux"
         assert client.set_redirecting(True, "left", 0.5)
         assert wait_for(lambda: focus == ["windows"]), focus
         assert server.return_edge == "left", "the way home was not armed on the PC"

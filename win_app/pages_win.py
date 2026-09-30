@@ -8,34 +8,56 @@ from __future__ import annotations
 import re
 
 import effects
+import peer as peers
 
 # (key, name, what the page is for), in sidebar order, which is setup order; Ctrl+1 is the first.
-PAGES = (
+_PAGES = (
     ("overview", "Overview",
-     "Where input is right now, and the controls you reach for every day. Pair with your Mac here "
+     "Where input is right now, and the controls you reach for every day. Pair with your {name} here "
      "first."),
     ("crossing", "Crossing",
-     "Choose how the pointer or a key moves input to your Mac, and how hard the edge pushes back "
+     "Choose how the pointer or a key moves input to your {name}, and how hard the edge pushes back "
      "first."),
     ("keyboard", "Keyboard",
-     "How this PC's Ctrl and Windows keys arrive on your Mac, the keys and buttons that stay here, "
-     "and how fast your Mac's pointer moves here."),
+     "How this PC's Ctrl and Windows keys arrive on your {name}, the keys and buttons that stay here, "
+     "and how fast your {name}'s pointer moves here."),
     ("design", "Design",
-     "How crossing looks on this PC: the light as you push toward your Mac, and where the pointer "
+     "How crossing looks on this PC: the light as you push toward your {name}, and where the pointer "
      "lands."),
     ("connection", "Connection",
-     "Whether Windows Firewall lets your Mac in, this PC's address, port and shared token, and your "
-     "Mac's IP address, which pairing learns."),
+     "Whether Windows Firewall lets your {name} in, this PC's address, port and shared token, and your "
+     "{name}'s IP address, which pairing learns."),
 )
+
+
+def pages(peer=peers.MAC) -> tuple:
+    """PAGES, naming `peer`."""
+    return tuple((key, name, peer.say(purpose)) for key, name, purpose in _PAGES)
+
+
+def purpose(key: str, peer=peers.MAC) -> str:
+    """What page `key` is for, naming `peer`."""
+    return next(peer.say(text) for page, _name, text in _PAGES if page == key)
+
+
+PAGES = pages()
 KEYS = tuple(page[0] for page in PAGES)
 # Under the purpose on the pages whose settings are this PC's alone, so nobody looks for the Mac's
 # on the PC: each app sets only its own machine.
-SCOPE = {
-    "crossing": "For this PC only; your Mac keeps its own. Only which side your Mac is on is shared. This PC's "
-                "resistance is also what its pointer meets at your Mac's edge on the way back.",
-    "design": "For this PC's screen only; your Mac keeps its own.",
-    "keyboard": "For this PC's keyboard only; your Mac keeps its own.",
+_SCOPE = {
+    "crossing": "For this PC only; your {name} keeps its own. Only which side your {name} is on is shared. This PC's "
+                "resistance is also what its pointer meets at your {name}'s edge on the way back.",
+    "design": "For this PC's screen only; your {name} keeps its own.",
+    "keyboard": "For this PC's keyboard only; your {name} keeps its own.",
 }
+
+
+def scope(key: str, peer=peers.MAC):
+    """SCOPE's line for `key`, naming `peer`, or None."""
+    return peer.say(_SCOPE[key]) if key in _SCOPE else None
+
+
+SCOPE = {key: scope(key) for key in _SCOPE}
 # The window's footer; the first sentence goes on Connection, whose changes wait for its button.
 FOOTER_APPLY = "Changes apply as you make them."
 FOOTER_TRAY = "Closing this window keeps Beamer running in the tray."
@@ -171,22 +193,27 @@ def toggle_part(parts, part, on) -> list:
     return [candidate for candidate in ("start", "middle", "end") if candidate in chosen]
 
 
-NOT_LEARNED_EDGE = "Not learned yet: your Mac tells this PC when it first connects, or choose a side."
+_NOT_LEARNED_EDGE = "Not learned yet: your {name} tells this PC when it first connects, or choose a side."
+NOT_LEARNED_EDGE = peers.MAC.say(_NOT_LEARNED_EDGE)
 
 
-def crossing_state_sentence(paired, mac_heard, sending, connected, armed, paused, full_screen_app) -> str:
+def not_learned_edge(peer=peers.MAC) -> str:
+    return peer.say(_NOT_LEARNED_EDGE)
+
+
+def crossing_state_sentence(paired, mac_heard, sending, connected, armed, paused, full_screen_app, peer=peers.MAC) -> str:
     """The Crossing page's line under Pause: why nothing can cross, first match wins, and only then
     whether crossing is on, held or paused."""
     if not paired:
-        return "Not paired yet, so no edge or shortcut moves input until you pair with your Mac above."
+        return peer.say("Not paired yet, so no edge or shortcut moves input until you pair with your {name} above.")
     if not mac_heard:
-        return "Waiting to hear from your Mac. This PC cannot push into it until your Mac has connected once."
+        return peer.say("Waiting to hear from your {name}. This PC cannot push into it until your {name} has connected once.")
     if not sending:
-        return "This PC drives your Mac is off, so edges and the shortcut do nothing."
+        return peer.say("This PC drives your {name} is off, so edges and the shortcut do nothing.")
     if not connected:
-        return (
-            "Not connected to your Mac, so edges and the shortcut do nothing yet. "
-            "Check that Windows drives this Mac is on, on your Mac."
+        return peer.say(
+            "Not connected to your {name}, so edges and the shortcut do nothing yet. "
+            "Check that {drive_switch} is on, on your {name}."
         )
     if not armed:
         return "Only the shortcut is switched on; there is nothing to pause."
@@ -205,12 +232,12 @@ def crossing_state_blocked(paired, mac_heard, sending, connected) -> bool:
     return not (paired and mac_heard and sending and connected)
 
 
-def outward_link_line(connected) -> str:
+def outward_link_line(connected, peer=peers.MAC) -> str:
     """The Overview's line for this PC's own link to the Mac, which its edges need and the receiver's
     status above it does not say."""
     if connected:
-        return "This PC to your Mac: Linked"
-    return "This PC to your Mac: not connected, so pushing an edge does nothing"
+        return peer.say("This PC to your {name}: Linked")
+    return peer.say("This PC to your {name}: not connected, so pushing an edge does nothing")
 
 
 def crossing_rows(methods) -> frozenset:
@@ -262,10 +289,10 @@ def trigger_phrase(key_name: str, style: str) -> str:
     return f"{key_name}, {'held' if style == 'hold' else 'twice'}"
 
 
-def ways_summary(methods, edge, parts, corner, key_name, style) -> str:
+def ways_summary(methods, edge, parts, corner, key_name, style, peer=peers.MAC) -> str:
     """The Ways in module's first line: every way input leaves for the Mac, in one sentence."""
     if not edge:
-        return "Nothing moves input to your Mac until it has connected once and told this PC which side it is on."
+        return peer.say("Nothing moves input to your {name} until it has connected once and told this PC which side it is on.")
     methods = set(methods)
     ways = []
     if "edge" in methods:
@@ -277,9 +304,9 @@ def ways_summary(methods, edge, parts, corner, key_name, style) -> str:
     if "shortcut" in methods:
         ways.append(f"hold {key_name}" if style == "hold" else f"press {key_name} twice")
     if not ways:
-        return "Nothing moves input to your Mac: choose at least one way below."
+        return peer.say("Nothing moves input to your {name}: choose at least one way below.")
     joined = ways[0] if len(ways) == 1 else ", ".join(ways[:-1]) + " or " + ways[-1]
-    return f"Input moves to your Mac when you {joined}."
+    return f"Input moves to your {peer.name} when you {joined}."
 
 
 # The arrangement diagram. Each side of this PC has an angle, and the Mac's screen travels round

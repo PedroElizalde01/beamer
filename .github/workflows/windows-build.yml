@@ -1,0 +1,46 @@
+name: Windows build
+
+# Builds Beamer.exe and its installer on a Windows runner, after the Windows tests pass, so a PC can
+# run this fork's Windows app without Python or Inno Setup on it. Download both from the run's
+# artifacts; a version tag also attaches them to its release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: win_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m pip install -r requirements-win.txt
+      - name: Windows tests
+        run: python -m unittest discover -s tests
+      - name: Beamer.exe
+        run: python -m PyInstaller --clean --noconfirm --distpath dist --workpath build build.spec
+      - name: Installer
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Odist Beamer-Setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beamer-windows
+          path: |
+            win_app/dist/Beamer.exe
+            win_app/dist/Beamer-Setup-*.exe
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: win_app/dist/Beamer-Setup-*.exe

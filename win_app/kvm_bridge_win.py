@@ -56,6 +56,7 @@ import firewall_win
 import ignored
 import motion
 import pairing
+import peer as peers
 from pairing import PAIRING_PORT, Announcer, local_address_towards
 import pages_win
 import protocol
@@ -81,12 +82,14 @@ HOME_PAGE = "https://kalkmancode.co.uk/beamer"
 HOME_PAGE_TEXT = "Beamer's website"
 
 IDLE_CODE = "––– –––"
-PAIR_HINT = "Type this code into Beamer on the Mac."
+# Before pairing, nothing says which kind of machine will type the code.
+PAIR_BUTTON = f"Pair a {peers.EITHER}"
+PAIR_HINT = f"Type this code into Beamer on your {peers.EITHER}."
 
 STATUS_TITLES = {
     ServerState.STOPPED: "Receiver stopped",
-    ServerState.WAITING: "Waiting for your Mac",
-    ServerState.CONNECTED: "Mac connected",
+    ServerState.WAITING: "Waiting for your {name}",
+    ServerState.CONNECTED: "{name} connected",
     ServerState.ERROR: "Receiver needs attention",
 }
 
@@ -120,6 +123,9 @@ MODIFIER_NOTES = {
     "positional": "Each key arrives as the Mac key in the same place: Ctrl as Control, the Windows "
     "key as Command.",
 }
+# A Linux computer has no choice to make: its Ctrl is the shortcut key, as this PC's is.
+LINUX_KEYS_NOTE = ("Each key arrives as the key in the same place on your Linux computer: Ctrl as Ctrl, "
+                   "the Windows key as Super. Shortcuts such as Ctrl+C work there as they do here.")
 FULL_SCREEN_CHECK_MS = 1000
 # How long a dragged slider waits, still, before the value it settled on is written to disk.
 SETTLE_MS = 300
@@ -199,7 +205,8 @@ class StatusBridge(QObject):
     sending = Signal(bool, str)
     redirecting = Signal(bool)
     focus = Signal(str)
-    learned = Signal(str, object, object)
+    # (host, return edge, resistance, platform the hello named or None)
+    learned = Signal(str, object, object, object)
     # Either link, telling us the two machines' arrangement changed at the other end.
     arrangement = Signal(str, int)
     alert = Signal(str, str)
@@ -221,6 +228,10 @@ class WindowsApplication(QWidget):
         self._closing = False
         self._page = "overview"
         self._apply_serial = 0
+        # What the paired machine is, for every word that names it; set from the config below.
+        self.peer = peers.MAC
+        # Callables that re-set each text naming the peer, run again when it changes.
+        self._peer_texts: list = []
         self.bridge = StatusBridge()
         self.bridge.changed.connect(self._on_status)
         self.bridge.pressure.connect(self._on_pressure)
@@ -255,12 +266,15 @@ class WindowsApplication(QWidget):
             self._set_status,
             pressure_callback=lambda edge, pressure, crossed, part=None: self.bridge.pressure.emit(edge, pressure, crossed, part),
             # The Mac's notch crossing lands on this PC's bottom edge, and that is the only
-            # arrival an effect draws differently. No edge is the Mac's shortcut or menu.
+            # arrival an effect draws differently; a Linux computer has no notch. No edge is the
+            # peer's shortcut or menu.
             arrival_callback=lambda edge, x, y: self.bridge.arrived.emit(
-                "switch" if edge is None else "notch" if edge == "bottom" else "edge", edge or "", float(x), float(y)
+                "switch" if edge is None else "notch" if edge == "bottom" and self.peer.platform == "mac" else "edge",
+                edge or "", float(x), float(y)
             ),
             focus_callback=self.bridge.focus.emit,
-            peer_callback=self.bridge.learned.emit,
+            peer_callback=lambda host, edge, resistance: self.bridge.learned.emit(
+                host, edge, resistance, self.server.peer_platform),
             arrangement_callback=self.bridge.arrangement.emit,
         )
         # The second link, outwards: this PC's keyboard and mouse on the Mac.
@@ -284,7 +298,7 @@ class WindowsApplication(QWidget):
         self.bridge.mac_learned.connect(self._on_mac_learned)
         self.hooks = capture_win.Hooks(self._on_hook_key, self.sender.on_mouse, self.sender.on_motion)
         self._trigger = capture_win.Trigger()
-        self._sending_detail = "Not connected to the Mac"
+        self._sending_detail = self.peer.say(sender.NOT_CONNECTED)
         self.update_checker = updates.Checker(
             VERSION, lambda: self._config is None or self._config.check_updates, self.bridge.update.emit, logger=LOGGER
         )
@@ -297,8 +311,10 @@ class WindowsApplication(QWidget):
         except ConfigError as exc:
             LOGGER.info("Configuration is not ready: %s", exc)
             self._status = ServerState.ERROR
-            self._status_detail = "Not paired yet: press Pair a Mac on Overview"
+            self._status_detail = f"Not paired yet: press {PAIR_BUTTON} on Overview"
 
+        if self._config is not None:
+            self.peer = peers.of(self._config.peer_platform)
         # Before any widget is built: every control takes its colours from the palette in use.
         appearance = self._config.appearance if self._config is not None else "system"
         theme.set_dark(theme.wants_dark(appearance, theme.system_dark()))
@@ -312,6 +328,7 @@ class WindowsApplication(QWidget):
         self._build_window()
         self._apply_theme()
         self._build_tray()
+        self._set_peer(self.peer.platform)
         theme.watch_system(self._apply_appearance)
 
         self.refresh_timer = QTimer(self)
@@ -371,7 +388,7 @@ class WindowsApplication(QWidget):
         }
         self._page_indexes: dict = {}
         for key, name, purpose in pages_win.PAGES:
-            scroll, layout = self._page_shell(name, purpose, pages_win.SCOPE.get(key))
+            scroll, layout = self._page_shell(key, name)
             builders[key](layout, current)
             layout.addStretch(1)
             self._page_indexes[key] = self.stack.addWidget(scroll)
@@ -382,7 +399,7 @@ class WindowsApplication(QWidget):
 
         self._select_page("overview")
 
-    def _page_shell(self, title: str, purpose: str, scope: Optional[str] = None):
+    def _page_shell(self, key: str, title: str):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -396,13 +413,43 @@ class WindowsApplication(QWidget):
         heading = widgets.label(title.upper(), "heading")
         heading.setFont(theme.font(theme.HEADING, 700))
         layout.addWidget(heading)
-        layout.addWidget(widgets.label(purpose, "note", wrap=True))
-        if scope is not None:
+        purpose = widgets.label("", "note", wrap=True)
+        self._named(lambda: purpose.setText(pages_win.purpose(key, self.peer)))
+        layout.addWidget(purpose)
+        if key in pages_win.SCOPE:
             # Whose settings these are, not something happening now, so not signal: on light,
             # signal reads as a link.
-            layout.addWidget(widgets.label(scope, "note-quiet", wrap=True))
+            scope = widgets.label("", "note-quiet", wrap=True)
+            self._named(lambda: scope.setText(pages_win.scope(key, self.peer)))
+            layout.addWidget(scope)
         scroll.setWidget(page)
         return scroll, layout
+
+    def _named(self, apply) -> None:
+        """Runs `apply()` now and again whenever the peer changes: for each text that names it."""
+        self._peer_texts.append(apply)
+        apply()
+
+    def _set_peer(self, platform: str) -> None:
+        """Names the paired machine as `platform` everywhere: every label, the drawing, the
+        Keyboard page, the tray, and the sender's and receiver's own status text."""
+        self.peer = peers.of(platform)
+        if self._sending_detail == self.sender.peer.say(sender.NOT_CONNECTED):
+            self._sending_detail = self.peer.say(sender.NOT_CONNECTED)
+        self.sender.set_peer(self.peer)
+        self.server.peer_name = self.peer.name
+        for apply in self._peer_texts:
+            apply()
+        for drawing in (self.arrangement_diagram, self.resistance_strip):
+            drawing.set_peer(self.peer)
+        self._reflect_modifiers()
+        self._update_style_hint(self._config.trigger_style if self._config is not None else "double_tap")
+        self._show_ignored(list(self._config.ignored_inputs) if self._config is not None else [])
+        self._show_paired(self._config.paired_with if self._config is not None else "")
+        if self._firewall_status is not None:
+            self._on_firewall(self._firewall_status)
+        self._reflect_ways()
+        self._refresh_window()
 
     def _select_page(self, key: str) -> None:
         index = self._page_indexes.get(key)
@@ -515,14 +562,15 @@ class WindowsApplication(QWidget):
         """The Mac's two everyday buttons: send input across without the shortcut or an edge, and
         hold the edges for a while."""
         module = widgets.Module("Keyboard and mouse")
-        self.redirect_button = QPushButton("Send input to your Mac")
+        self.redirect_button = QPushButton(self.peer.say("Send input to your {name}"))
         self.redirect_button.setProperty("vernier", "primary")
         self.redirect_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.redirect_button.clicked.connect(self.toggle_redirect)
         module.body.addWidget(self.redirect_button)
         # Why the button above is dimmed, while it is.
-        self.redirect_note = widgets.label("Switch on This PC drives your Mac, below, to send input from here.",
-                                           "note", wrap=True)
+        self.redirect_note = widgets.label("", "note", wrap=True)
+        self._named(lambda: self.redirect_note.setText(
+            self.peer.say("Switch on This PC drives your {name}, below, to send input from here.")))
         self.redirect_note.setVisible(False)
         module.body.addWidget(self.redirect_note)
         self.pause_button = QPushButton("Pause crossing")
@@ -551,7 +599,7 @@ class WindowsApplication(QWidget):
         )
 
     def _crossing_state_sentence(self) -> str:
-        return pages_win.crossing_state_sentence(*self._crossing_state_args())
+        return pages_win.crossing_state_sentence(*self._crossing_state_args(), peer=self.peer)
 
     def _check_full_screen(self) -> None:
         """The Mac's rule: a full-screen app in front holds the edges, the shortcut still works.
@@ -579,12 +627,14 @@ class WindowsApplication(QWidget):
     def _directions_module(self, current: Config) -> QWidget:
         module = widgets.Module("Directions")
         # The tray's words, so the two never disagree.
-        self.allow_switch = widgets.Switch("Your Mac drives this PC")
+        self.allow_switch = widgets.Switch("")
+        self._named(lambda: self.allow_switch.setText(self.peer.say("Your {name} drives this PC")))
         self.allow_switch.setFont(theme.font(theme.TYPE["body"]))
         self.allow_switch.setChecked(current.allow_mac_to_drive)
         self.allow_switch.toggled.connect(self._set_allow_drive)
         module.body.addWidget(self.allow_switch)
-        self.send_switch = widgets.Switch("This PC drives your Mac")
+        self.send_switch = widgets.Switch("")
+        self._named(lambda: self.send_switch.setText(self.peer.say("This PC drives your {name}")))
         self.send_switch.setFont(theme.font(theme.TYPE["body"]))
         self.send_switch.setChecked(current.send_to_mac)
         self.send_switch.toggled.connect(self._toggle_sending)
@@ -711,17 +761,19 @@ class WindowsApplication(QWidget):
         self.edge_choice = widgets.Choice(
             EDGE_CHOICES, columns=4, current=current.mac_return_edge, on_change=self._set_arrangement
         )
-        self.edge_choice.set_names("Where your Mac is")
-        self.edge_unlearned = widgets.label(pages_win.NOT_LEARNED_EDGE, "note", wrap=True)
+        self._named(lambda: self.edge_choice.set_names(self.peer.say("Where your {name} is")))
+        self.edge_unlearned = widgets.label("", "note", wrap=True)
+        self._named(lambda: self.edge_unlearned.setText(pages_win.not_learned_edge(self.peer)))
+        where_key = widgets.label("", "key")
+        self._named(lambda: where_key.setText(self.peer.say("Where your {name} is")))
+        where_note = widgets.label("", "note", wrap=True)
+        self._named(lambda: where_note.setText(
+            self.peer.say("One border, walked both ways, so changing it here moves it on your {name} too.")))
         self.edge_unlearned.setVisible(not current.mac_return_edge)
         self.crossing_rows = {
             "edge": self._row(
-                widgets.label("Where your Mac is", "key"),
-                widgets.label(
-                    "One border, walked both ways, so changing it here moves it on your Mac too.",
-                    "note",
-                    wrap=True,
-                ),
+                where_key,
+                where_note,
                 self.edge_choice.view,
                 self.edge_unlearned,
             ),
@@ -761,7 +813,9 @@ class WindowsApplication(QWidget):
         now_row.setSpacing(6)
         # The Mac's half of the border -- the edge and push it asks for when it is the one
         # sending. Hidden until the Mac has said, rather than reading "not set yet".
-        now_row.addWidget(widgets.label("Coming back from your Mac:", "note"))
+        coming_back = widgets.label("", "note")
+        self._named(lambda: coming_back.setText(self.peer.say("Coming back from your {name}:")))
+        now_row.addWidget(coming_back)
         self.return_readout = widgets.label("", "readout", wrap=True)
         now_row.addWidget(self.return_readout, 1)
         self.return_row = self._row(now_row)
@@ -814,7 +868,7 @@ class WindowsApplication(QWidget):
         motion.set_shown(self.shortcut_module, "shortcut" in shown)
         key_name = TRIGGER_KEYS.get(config.trigger_key, config.trigger_key)
         summary = pages_win.ways_summary(config.crossing_methods, config.mac_return_edge, config.crossing_edge_parts,
-                                         config.crossing_corner, key_name, config.trigger_style)
+                                         config.crossing_corner, key_name, config.trigger_style, self.peer)
         if summary != self.ways_summary.text():
             shot = motion.snapshot(self.ways_summary)
             self.ways_summary.setText(summary)
@@ -925,7 +979,8 @@ class WindowsApplication(QWidget):
     def _speed_module(self, current: Config) -> QWidget:
         """How the Mac's pointer feels on this PC: the Mac sends what its own acceleration made of
         the hand's movement, and this PC's settings decide the rest."""
-        module = widgets.Module("The Mac's pointer here")
+        module = widgets.Module("")
+        self._named(lambda: module.eyebrow.setText(self.peer.say("The {name}'s pointer here")))
         self.speed_sliders = {}
         self.speed_readouts = {}
         for key, name, value in (("pointer_speed", "Pointer speed", current.pointer_speed),
@@ -941,10 +996,11 @@ class WindowsApplication(QWidget):
             row.addWidget(readout)
             module.body.addLayout(row)
             self.speed_sliders[key], self.speed_readouts[key] = slider, readout
-        module.body.addWidget(widgets.label(
-            "For the Mac's trackpad or mouse while it drives this PC.", "note", wrap=True
-        ))
-        self.reverse_scroll_switch = widgets.Switch("Reverse the Mac's scrolling")
+        speed_note = widgets.label("", "note", wrap=True)
+        self._named(lambda: speed_note.setText(self.peer.say("For the {name}'s trackpad or mouse while it drives this PC.")))
+        module.body.addWidget(speed_note)
+        self.reverse_scroll_switch = widgets.Switch("")
+        self._named(lambda: self.reverse_scroll_switch.setText(self.peer.say("Reverse the {name}'s scrolling")))
         self.reverse_scroll_switch.setFont(theme.font(theme.TYPE["body"]))
         self.reverse_scroll_switch.setChecked(current.reverse_scroll)
         self.reverse_scroll_switch.toggled.connect(self._reverse_scroll_changed)
@@ -979,6 +1035,14 @@ class WindowsApplication(QWidget):
         self.modifier_note = widgets.label(MODIFIER_NOTES[current.modifier_style], "note", wrap=True)
         module.body.addWidget(self.modifier_note)
         return module
+
+    def _reflect_modifiers(self) -> None:
+        """A Mac chooses between the two styles; a Linux computer always gets Same positions, so
+        the choice is hidden and the note says what happens instead."""
+        linux = self.peer.platform == "linux"
+        self.modifier_choice.view.setVisible(not linux)
+        style = self._config.modifier_style if self._config is not None else "semantic"
+        self.modifier_note.setText(LINUX_KEYS_NOTE if linux else MODIFIER_NOTES[style])
 
     def _set_modifier_style(self, value: str) -> None:
         self.modifier_note.setText(MODIFIER_NOTES[value])
@@ -1022,11 +1086,11 @@ class WindowsApplication(QWidget):
             row_layout.addWidget(remove)
             self.ignored_list.addWidget(row)
         text = refused or (
-            "These keep working on this PC while its input is on your Mac: a mouse's back button for "
-            "this PC's browser, say, or a volume key for its speakers."
+            f"These keep working on this PC while its input is on your {self.peer.name}: a mouse's back "
+            "button for this PC's browser, say, or a volume key for its speakers."
             if entries
-            else "Nothing yet. Every key and button goes to your Mac while it has input. Add one to keep "
-            "it here: a mouse's back button for this PC's browser, say, or a volume key for its speakers."
+            else f"Nothing yet. Every key and button goes to your {self.peer.name} while it has input. Add one "
+            "to keep it here: a mouse's back button for this PC's browser, say, or a volume key for its speakers."
         )
         self.ignored_note.setText(text)
         widgets.set_role(self.ignored_note, "note-amber" if refused else "note")
@@ -1062,11 +1126,9 @@ class WindowsApplication(QWidget):
 
     def _shortcut_module(self, current: Config) -> QWidget:
         module = widgets.Module("Shortcut")
-        module.body.addWidget(
-            widgets.label(
-                "Use this key to send input to your Mac, and to bring it back.", "note", wrap=True
-            )
-        )
+        shortcut_note = widgets.label("", "note", wrap=True)
+        self._named(lambda: shortcut_note.setText(self.peer.say("Use this key to send input to your {name}, and to bring it back.")))
+        module.body.addWidget(shortcut_note)
         self.trigger_recorder = widgets.InputRecorder(
             TRIGGER_KEYS.get(current.trigger_key, current.trigger_key),
             self._record_trigger,
@@ -1140,7 +1202,7 @@ class WindowsApplication(QWidget):
 
     def _update_style_hint(self, style: str) -> None:
         text = (
-            "Input is on the Mac for as long as the key is held."
+            f"Input is on the {self.peer.name} for as long as the key is held."
             if style == "hold"
             else "Tap twice to switch; tap twice again to come back."
         )
@@ -1191,14 +1253,11 @@ class WindowsApplication(QWidget):
         self.glow_toggle.setChecked(current.edge_glow)
         self.glow_toggle.toggled.connect(self._apply_look)
         module.body.addWidget(self.glow_toggle)
-        module.body.addWidget(
-            widgets.label(
-                "Lights this PC as you push toward your Mac. Switched off, crossing still works. "
-                "Your Mac sets how its own edge and notch look.",
-                "note",
-                wrap=True,
-            )
-        )
+        glow_note = widgets.label("", "note", wrap=True)
+        self._named(lambda: glow_note.setText(self.peer.say(
+            "Lights this PC as you push toward your {name}. Switched off, crossing still works. Your {name} sets "
+            + ("how its own edge and notch look." if self.peer.platform == "mac" else "how its own edge looks."))))
+        module.body.addWidget(glow_note)
         self.landing_toggle = widgets.Switch("Show where the pointer lands")
         self.landing_toggle.setFont(theme.font(theme.TYPE["body"]))
         self.landing_toggle.setChecked(current.shortcut_arrival)
@@ -1429,13 +1488,13 @@ class WindowsApplication(QWidget):
     # -- Pairing --------------------------------------------------------------------------
 
     def _pairing_block(self, layout, current: Config) -> None:
-        module = widgets.Module("Your Mac")
+        module = widgets.Module("Pairing")
         self.mac_module = module
         self.paired_heading = widgets.label("", "tile-name", wrap=True)
         module.body.addWidget(self.paired_heading)
         self.pair_intro = widgets.label(
-            "Press Pair a Mac, then on your Mac choose this PC and type the six-digit code shown here. "
-            "You only do this once.",
+            f"Press {PAIR_BUTTON}, then on your {peers.EITHER} choose this PC and type the six-digit code "
+            "shown here. You only do this once.",
             "note",
             wrap=True,
         )
@@ -1483,9 +1542,12 @@ class WindowsApplication(QWidget):
 
     def _show_paired(self, name: str) -> None:
         self.paired_heading.setText(f"Paired with {name}" if name else "Not paired yet")
+        # Named for the machine once there is one; until then pairing is all the module is for.
+        self.mac_module.eyebrow.setText(self.peer.say("Your {name}") if name else "Pairing")
         self.pair_intro.setVisible(not name)
         if self.announcer.code is None:
-            self.pair_button.setText("Pair a different Mac" if name else "Pair a Mac")
+            # Not "a different Mac": the next one may be the other kind.
+            self.pair_button.setText("Pair a different computer" if name else PAIR_BUTTON)
         self._place_pairing(bool(name))
 
     def _place_pairing(self, paired: bool) -> None:
@@ -1547,7 +1609,7 @@ class WindowsApplication(QWidget):
                 motion.set_shown(self.code_module, True)
             # Every tick, so switching Hide addresses while a code is up applies at once.
             note = self._shown(
-                f"Not listed on the Mac? Type this PC's address there: {', '.join(self._code_addresses)}"
+                f"Not listed on your {peers.EITHER}? Type this PC's address there: {', '.join(self._code_addresses)}"
             ) if self._code_addresses else ""
             if self.address_note.text() != note:
                 self.address_note.setText(note)
@@ -1564,7 +1626,8 @@ class WindowsApplication(QWidget):
         if outcome == "refused":
             self._say_pairing("A wrong code was entered, so that code is cancelled. Pair again for a fresh one.", "note-fault")
         elif outcome == "version":
-            self._say_pairing("The Mac runs a different version of Beamer. Update Beamer on both machines, then pair again.", "note-fault")
+            self._say_pairing("The other computer runs a different version of Beamer. Update Beamer on both machines, "
+                              "then pair again.", "note-fault")
         elif outcome == "expired":
             self._say_pairing("The code expired. Pair again for a fresh one.", "note-amber")
         elif outcome is None:
@@ -1604,7 +1667,7 @@ class WindowsApplication(QWidget):
         self.host_entry.setText(candidate.host)
         self.token_entry.setText(token)
         self._refresh_pairing()
-        who = mac_name or "your Mac"
+        who = mac_name or "the other computer"
         self._show_paired(candidate.paired_with)
         self._say_pairing("Paired. The receiver restarted with the new token.", "note-live")
         LOGGER.info("Paired with %s", who)
@@ -1661,9 +1724,11 @@ class WindowsApplication(QWidget):
         module.body.addLayout(fields)
         mac_row = QHBoxLayout()
         mac_row.setSpacing(6)
-        mac_row.addWidget(widgets.label("Your Mac's IP address:", "note"))
+        address_key = widgets.label("", "note")
+        self._named(lambda: address_key.setText(self.peer.say("Your {name}'s IP address:")))
+        mac_row.addWidget(address_key)
         self.mac_host_readout = widgets.label(self._shown(current.mac_host) or "Not learned yet", "readout", wrap=True)
-        self.mac_host_readout.setAccessibleName("Your Mac's IP address")
+        self._named(lambda: self.mac_host_readout.setAccessibleName(self.peer.say("Your {name}'s IP address")))
         mac_row.addWidget(self.mac_host_readout, 1)
         module.body.addLayout(mac_row)
         self._show_host_entry()
@@ -1824,7 +1889,7 @@ class WindowsApplication(QWidget):
         if self._closing:
             return
         self._firewall_status = status
-        advice = firewall_win.advise(status)
+        advice = firewall_win.advise(status, self.peer)
         self._firewall_advice = advice
         self.firewall_note.setText(advice.sentence)
         if status.error:
@@ -1910,18 +1975,20 @@ class WindowsApplication(QWidget):
         self.open_action.triggered.connect(self.show_window)
         self.status_action = menu.addAction(self._title())
         self.status_action.setEnabled(False)
-        self.redirect_action = menu.addAction("Send input to your Mac")
+        self.redirect_action = menu.addAction(self.peer.say("Send input to your {name}"))
         self.redirect_action.triggered.connect(self.toggle_redirect)
         self.pause_action = menu.addAction("Pause crossing")
         self.pause_action.triggered.connect(self.toggle_pause)
         menu.addSeparator()
         # One tick per direction, each the same switch the Overview page shows, so either
         # direction can be turned off while the other keeps working and the two never disagree.
-        self.drive_action = menu.addAction("Your Mac drives this PC")
+        self.drive_action = menu.addAction("")
+        self._named(lambda: self.drive_action.setText(self.peer.say("Your {name} drives this PC")))
         self.drive_action.setCheckable(True)
         self.drive_action.toggled.connect(self.allow_switch.setChecked)
         self.allow_switch.toggled.connect(self.drive_action.setChecked)
-        self.send_action = menu.addAction("This PC drives your Mac")
+        self.send_action = menu.addAction("")
+        self._named(lambda: self.send_action.setText(self.peer.say("This PC drives your {name}")))
         self.send_action.setCheckable(True)
         self.send_action.toggled.connect(self.send_switch.setChecked)
         self.send_switch.toggled.connect(self.send_action.setChecked)
@@ -1980,7 +2047,7 @@ class WindowsApplication(QWidget):
         self.trigger_style_choice.set_value(config.trigger_style)
         self._update_style_hint(config.trigger_style)
         self.modifier_choice.set_value(config.modifier_style)
-        self.modifier_note.setText(MODIFIER_NOTES[config.modifier_style])
+        self._reflect_modifiers()
         self.glow_style_choice.set_value(config.glow_style)
         self.glow_colour_choice.set_value(config.glow_colour)
         self.length_choice.set_value(config.effect_length)
@@ -2087,7 +2154,7 @@ class WindowsApplication(QWidget):
         time, never both."""
         self.sender.set_receiving(target == "windows")
 
-    def _on_learned(self, host, edge, resistance) -> None:
+    def _on_learned(self, host, edge, resistance, platform=None) -> None:
         """The Mac's address and the way home it named in its hello. Saved, so
         this PC can open its own link to the Mac before the Mac has crossed --
         or at all, if the Mac is asleep when Beamer starts here."""
@@ -2100,6 +2167,13 @@ class WindowsApplication(QWidget):
             LOGGER.info("Ignoring %s as the Mac's address: that is this PC", host)
             host = None
         changed = False
+        # What the peer is, as its hello said: a hello that names nothing is a Mac.
+        named = peers.platform_of({"platform": platform})
+        if named != self._config.peer_platform:
+            self._config.peer_platform = named
+            changed = True
+            LOGGER.info("The paired machine is a %s", peers.of(named).name)
+            self._set_peer(named)
         if host and host != self._config.mac_host and self._config.mac_hardware_address:
             # A different Mac: the old one's hardware address would wake the wrong machine.
             self._config.mac_hardware_address = ""
@@ -2127,7 +2201,7 @@ class WindowsApplication(QWidget):
 
     def _on_redirecting(self, redirecting: bool) -> None:
         self._sending_detail = (
-            "This PC's keyboard and mouse are on the Mac" if redirecting else self.sender.status
+            f"This PC's keyboard and mouse are on the {self.peer.name}" if redirecting else self.sender.status
         )
 
     def _announced_port(self) -> int:
@@ -2147,7 +2221,7 @@ class WindowsApplication(QWidget):
         box.setIconPixmap(QIcon(str(ICON_PATH)).pixmap(64, 64))
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
-            f"<b>Beamer {VERSION}</b><br>One keyboard and mouse for your Mac and PC.<br><br>"
+            f"<b>Beamer {VERSION}</b><br>One keyboard and mouse for your {self.peer.name} and PC.<br><br>"
             f'<a href="{HOME_PAGE}" style="color: {theme.colour("signal")};">{HOME_PAGE_TEXT}</a>'
         )
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -2328,10 +2402,10 @@ class WindowsApplication(QWidget):
         # The Mac's name goes in the detail, not the heading: a long name wrapped the heading onto
         # two lines at 640 wide and made the window scroll.
         if state is ServerState.CONNECTED and detail.startswith("Connected to "):
-            who = (self._config.paired_with if self._config is not None else "") or "Your Mac"
+            who = (self._config.paired_with if self._config is not None else "") or self.peer.say("Your {name}")
             detail = f"{who} at {detail[len('Connected to '):]}"
         detail = self._shown(detail)
-        heading = STATUS_TITLES[state]
+        heading = self.peer.say(STATUS_TITLES[state])
         if heading != self.status_heading.text():
             first = not self.status_heading.text()
             shot = None if first else motion.snapshot(self.status_heading)
@@ -2342,7 +2416,7 @@ class WindowsApplication(QWidget):
         if detail != self.status_detail.text():
             self.status_detail.setText(detail)
         widgets.set_role(self.status_detail, "note-fault" if state is ServerState.ERROR else "note")
-        location = "On your Mac" if self.sender.redirecting else "On this PC"
+        location = self.peer.say("On your {name}") if self.sender.redirecting else "On this PC"
         if location != self.location_readout.text():
             self.location_readout.setText(location)
         trip = self.sender.round_trip_ms
@@ -2350,7 +2424,7 @@ class WindowsApplication(QWidget):
         if trip_text != self.round_trip_readout.text():
             self.round_trip_readout.setText(trip_text)
             self.round_trip_row.setVisible(trip is not None)
-        redirect_text = "Bring input back to this PC" if self.sender.redirecting else "Send input to your Mac"
+        redirect_text = "Bring input back to this PC" if self.sender.redirecting else self.peer.say("Send input to your {name}")
         if redirect_text != self.redirect_button.text():
             self.redirect_button.setText(redirect_text)
             self.redirect_action.setText(redirect_text)
@@ -2364,7 +2438,7 @@ class WindowsApplication(QWidget):
             self.pause_action.setText(pause_text)
             widgets.set_role(self.pause_button, "primary" if self.sender.crossing_paused else "")
         args = self._crossing_state_args()
-        sentence = pages_win.crossing_state_sentence(*args)
+        sentence = pages_win.crossing_state_sentence(*args, peer=self.peer)
         if sentence != self.crossing_state.text():
             shot = motion.snapshot(self.crossing_state)
             self.crossing_state.setText(sentence)
@@ -2372,7 +2446,7 @@ class WindowsApplication(QWidget):
         armed = args[4]
         self.pause_button.setVisible(armed)
         motion.set_shown(self.pause_row, armed or pages_win.crossing_state_blocked(*args[:4]))
-        outward = pages_win.outward_link_line(self.sender.connected)
+        outward = pages_win.outward_link_line(self.sender.connected, self.peer)
         if outward != self.outward_line.text():
             shot = motion.snapshot(self.outward_line)
             self.outward_line.setText(outward)
@@ -2380,7 +2454,7 @@ class WindowsApplication(QWidget):
         # "On your Mac" above already says this while redirecting; the hint is for the rest --
         # not connected, or the hooks failing to install -- and stays quiet in the boring case.
         send_hint = "" if self.sender.redirecting or self._sending_detail in (
-            "Off", "Not connected to the Mac"
+            "Off", self.peer.say(sender.NOT_CONNECTED)
         ) else self._shown(self._sending_detail)
         if send_hint != self.send_hint.text():
             self.send_hint.setText(send_hint)

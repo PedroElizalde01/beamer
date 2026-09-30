@@ -9,6 +9,7 @@ from pathlib import Path
 import capture_win
 import effects
 import ignored
+import peer
 import protocol
 import return_edge
 import tokens
@@ -71,6 +72,9 @@ class Config:
     effect_length: str = "normal"
     # The Mac's name from the last pairing, for the window to say who this PC is paired with.
     paired_with: str = ""
+    # What the paired machine is, as its hello last said: "mac" or "linux". The window names it
+    # by this from the moment it starts; see peer.py.
+    peer_platform: str = peer.DEFAULT
     # Whether each machine may take the other's input. Two plain switches: the
     # receiver, and the outward link.
     allow_mac_to_drive: bool = True
@@ -225,6 +229,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError(f"effect_length must be one of: {', '.join(lengths)}")
     if not isinstance(config.paired_with, str):
         raise ConfigError("paired_with must be text")
+    if config.peer_platform not in peer.PLATFORMS:
+        raise ConfigError(f"peer_platform must be one of: {', '.join(peer.PLATFORMS)}")
     if not isinstance(config.send_to_mac, bool):
         raise ConfigError("send_to_mac must be true or false")
     if not isinstance(config.mac_host, str):
@@ -261,6 +267,8 @@ def config_from_dict(raw: dict) -> Config:
             shortcut_arrival_style=switch_style,
             effect_length=raw.get("effect_length", "normal"),
             paired_with=raw.get("paired_with", "") or "",
+            # An unknown platform is a Mac, as a hello that names none is, rather than a refused file.
+            peer_platform=raw.get("peer_platform") if raw.get("peer_platform") in peer.PLATFORMS else peer.DEFAULT,
             allow_mac_to_drive=raw.get("allow_mac_to_drive", True),
             check_updates=raw.get("check_updates", True),
             hide_addresses=raw.get("hide_addresses", False),
@@ -326,6 +334,7 @@ def config_to_dict(config: Config) -> dict:
         "shortcut_arrival_style": config.shortcut_arrival_style,
         "effect_length": config.effect_length,
         "paired_with": config.paired_with,
+        "peer_platform": config.peer_platform,
         "allow_mac_to_drive": config.allow_mac_to_drive,
         "check_updates": config.check_updates,
         "hide_addresses": config.hide_addresses,
