@@ -11,6 +11,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(dirname "$here")"
 version="$(tr -d '[:space:]' < "$repo/VERSION")"
 python="${PYTHON:-$repo/.venv/bin/python}"
+# A path is made absolute before the cd below, so PYTHON=.venv/bin/python works from the repository.
+case "$python" in */*) python="$(realpath "$python")" ;; esac
 maintainer="${MAINTAINER:-$(git -C "$repo" config user.name || true) <$(git -C "$repo" config user.email || true)>}"
 [ "$maintainer" = " <>" ] && maintainer="Beamer for Linux <noreply@github.com>"
 out="$here/dist"
