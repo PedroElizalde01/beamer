@@ -3,7 +3,6 @@ input with sequence numbers, the ack heartbeat, the clipboard on the way out, an
 sending input home. No X needed.  python3 linux_app/test_link.py"""
 
 import sys
-import threading
 import time
 import types
 from pathlib import Path
