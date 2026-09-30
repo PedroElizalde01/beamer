@@ -209,7 +209,12 @@ class ReceiverServer:
         # owner marshals it.
         self._arrival_callback = arrival_callback
         self._self_name = self_name
-        self._peer_name = peer_name
+        # The peer's name in status text. The owner may change it once it knows the peer better:
+        # the PC learns from the hello whether a Mac or a Linux computer is on the other end.
+        self.peer_name = peer_name
+        # What the peer's hello says it is ("linux"), or None for one that says nothing: a Mac, or
+        # nobody yet. Set before `peer_callback` fires for that connection.
+        self.peer_platform: Optional[str] = None
         self._self_target = self_target
         self._peer_target = peer_target
         self._status_callback = status_callback
@@ -484,7 +489,7 @@ class ReceiverServer:
                 protocol.PROTOCOL_VERSION,
             )
             self._send_message(connection, session, protocol.welcome_msg(error="version_mismatch"))
-            self._note_version_mismatch(f"{self._peer_name} app is an older Beamer version — update both apps")
+            self._note_version_mismatch(f"{self.peer_name} app is an older Beamer version — update both apps")
             return
 
         # The Mac now pings at least once a second while idle, so a read
@@ -511,7 +516,9 @@ class ReceiverServer:
         LOGGER.info("Authenticated %s (protocol v%s)", peer, version)
         # A peer that has just connected has its input at home, whatever the
         # session it replaced was in the middle of.
-        self._hand_back(f"{self._peer_name} reconnected")
+        self._hand_back(f"{self.peer_name} reconnected")
+        platform = hello.get("platform")
+        self.peer_platform = platform if isinstance(platform, str) else None
         self._notify_peer(address[0], hello)
         self._set_status(ServerState.CONNECTED, f"Connected to {address[0]}")
 
@@ -602,7 +609,7 @@ class ReceiverServer:
                 if is_current:
                     self._client = None
             if is_current:
-                self._hand_back(f"{self._peer_name} went away")
+                self._hand_back(f"{self.peer_name} went away")
             # A preempted (superseded) session must exit silently: only the
             # current-generation session may flip status to WAITING.
             if is_current and not server_stop.is_set():
@@ -630,12 +637,12 @@ class ReceiverServer:
                 if exc.peer_version is None:
                     LOGGER.warning("%s opened with the pre-v4 cleartext protocol", peer)
                     connection.sendall(protocol.legacy_frame(protocol.welcome_msg(error="version_mismatch")))
-                    self._note_version_mismatch(f"{self._peer_name} app is an older Beamer version — update both apps")
+                    self._note_version_mismatch(f"{self.peer_name} app is an older Beamer version — update both apps")
                 else:
                     LOGGER.warning("%s speaks wire version %r, expected %s", peer, exc.peer_version, protocol.PROTOCOL_VERSION)
                     connection.sendall(session.preamble())
                     self._note_version_mismatch(
-                        f"{self._peer_name} app is Beamer protocol v{exc.peer_version}, this {self._self_name} is v{protocol.PROTOCOL_VERSION} — update both apps"
+                        f"{self.peer_name} app is Beamer protocol v{exc.peer_version}, this {self._self_name} is v{protocol.PROTOCOL_VERSION} — update both apps"
                     )
                 return None
             connection.sendall(session.preamble())
@@ -730,7 +737,7 @@ class ReceiverServer:
             return
         if self._sent_home_for_lock:
             return
-        LOGGER.info("Windows is locked while the %s drives it; sending its input home", self._peer_name)
+        LOGGER.info("Windows is locked while the %s drives it; sending its input home", self.peer_name)
         self._sent_home_for_lock = self.send_home()
 
     def _clipboard_module(self):
@@ -778,7 +785,7 @@ class ReceiverServer:
             if outcome.action == crossing.HOLD:
                 desktop.set_cursor_position(*outcome.position)
             elif outcome.action == crossing.CROSS:
-                LOGGER.info("Pointer pushed through the %s edge; returning input to the %s", model.edge, self._peer_name)
+                LOGGER.info("Pointer pushed through the %s edge; returning input to the %s", model.edge, self.peer_name)
                 self._send_message(connection, session, protocol.switch_msg(self._peer_target, outcome.edge, outcome.offset))
         except Exception:
             # Logged once, not at 100Hz: the return edge is dropped until the
@@ -818,7 +825,7 @@ class ReceiverServer:
         if not self._peer_driving or connection is None or session is None:
             return False
         self._drop_return()
-        LOGGER.info("Switch asked for here; sending input home to the %s", self._peer_name)
+        LOGGER.info("Switch asked for here; sending input home to the %s", self.peer_name)
         threading.Thread(
             target=self._send_message,
             args=(connection, session, protocol.switch_msg(self._peer_target)),
@@ -900,7 +907,7 @@ class ReceiverServer:
         try:
             release()
         except Exception:
-            LOGGER.exception("Could not release the keys the %s was holding", self._peer_name)
+            LOGGER.exception("Could not release the keys the %s was holding", self.peer_name)
 
     def _notify_pressure(self, edge: str, pressure: float, crossed: bool, part: Optional[str] = None) -> None:
         if self._pressure_callback is None:

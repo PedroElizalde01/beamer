@@ -133,7 +133,7 @@ class Link:
             sock.settimeout(AUTH_TIMEOUT_SECONDS)
             protocol.recv_preamble(sock, session)
             protocol.send_msg(sock, session, protocol.hello_msg(
-                return_edge=self.home_edge, resistance_px=int(self.cfg.resistance_px)))
+                return_edge=self.home_edge, resistance_px=int(self.cfg.resistance_px), platform="linux"))
             try:
                 reply = protocol.recv_msg(sock, session)
             except (protocol.ConnectionClosed, protocol.AuthenticationError):

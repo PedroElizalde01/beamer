@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 import motion
 import pages_win
+import peer as peers
 import theme
 import tokens
 
@@ -53,7 +54,21 @@ class ArrangementDiagram(QWidget):
         self._angle = pages_win.SIDE_ANGLE["right"]
         self._marks = _marks("right", (), (), "", False)
         self._cap_text = ""
+        # The machine on the other screen; the window sets it for the peer it has.
+        self.peer = peers.MAC
         self.setFixedHeight(self._height())
+
+    @property
+    def peer_label(self) -> str:
+        return f"Your {self.peer.short}"
+
+    def set_peer(self, peer) -> None:
+        """Names the other screen, and says it again to a screen reader, for `peer`."""
+        self.peer = peer
+        if self._state is not None:
+            edge, methods, parts, corner, key_name, style = self._state
+            self.setAccessibleDescription(pages_win.ways_summary(methods, edge, parts, corner, key_name, style, peer))
+        self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(2 * round(SCREEN[0]) + round(GAP) + 2 * round(PAD), self._height())
@@ -74,7 +89,7 @@ class ArrangementDiagram(QWidget):
         shortcut = "shortcut" in methods
         if shortcut:
             self._cap_text = pages_win.trigger_phrase(key_name, style)
-        self.setAccessibleDescription(pages_win.ways_summary(methods, edge, parts, corner, key_name, style))
+        self.setAccessibleDescription(pages_win.ways_summary(methods, edge, parts, corner, key_name, style, self.peer))
         targets = _marks(edge, methods, parts, corner, shortcut)
         start_marks = dict(self._marks)
         start_angle = self._angle
@@ -103,7 +118,7 @@ class ArrangementDiagram(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         pc, mac, pair_h = pages_win.arrangement_rects(self.width(), PAD, self._angle, SCREEN, GAP)
         radius = tokens.RADIUS["field"]
-        self._screen(painter, QRectF(*mac), "Your Mac", "panel", "edge", "ink_3", radius)
+        self._screen(painter, QRectF(*mac), self.peer_label, "panel", "edge", "ink_3", radius)
         self._screen(painter, QRectF(*pc), "This PC", "well", "edge", "ink_2", radius)
         for key, level in self._marks.items():
             if level <= 0.001:
@@ -213,6 +228,7 @@ class PushStrip(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._value = None
         self._shown = 0.0
+        self.peer = peers.MAC
         self._glow = 0.0
         self._mac_left = False
 
@@ -286,8 +302,16 @@ class PushStrip(QWidget):
             # Text drawn in the flipped frame would read backwards.
             painter.resetTransform()
             label = QRectF(self.width() - label.right(), label.top(), label.width(), label.height())
-        painter.drawText(label, Qt.AlignmentFlag.AlignCenter, "Your Mac")
+        painter.drawText(label, Qt.AlignmentFlag.AlignCenter, self.peer_label)
         painter.end()
+
+    @property
+    def peer_label(self) -> str:
+        return f"Your {self.peer.short}"
+
+    def set_peer(self, peer) -> None:
+        self.peer = peer
+        self.update()
 
     def _pointer(self, painter, tip: QPointF) -> None:
         # An arrow pointing at the edge, its tip where the push has reached.

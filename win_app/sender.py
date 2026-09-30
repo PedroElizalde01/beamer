@@ -30,6 +30,7 @@ import time
 from typing import Callable, Optional
 
 import ignored
+import peer as peers
 import protocol
 import return_edge
 import wol
@@ -55,15 +56,19 @@ _RELEASE_MARK = "_release"
 ROUND_TRIP_SAMPLES = 8
 ROUND_TRIP_MAX_AGE_SECONDS = 5.0
 WAKE_POLL_SECONDS = 0.5
-WAKING_STATUS = "Waking your Mac…"
-NOT_WOKEN_STATUS = "Your Mac did not wake"
+# Each status names the peer through peer.Peer.say; the constants are the Mac's wording, as before.
+_WAKING = "Waking your {name}…"
+_NOT_WOKEN = "Your {name} did not wake"
+NOT_CONNECTED = "Not connected to the {name}"
 
 # The capture names this PC's Ctrl "cmd" and its Windows key "ctrl", the Semantic style, so Ctrl+C
 # is Cmd+C on the Mac. Positional swaps them back.
 POSITIONAL_SWAP = {"cmd": "ctrl", "cmd_r": "ctrl_r", "ctrl": "cmd", "ctrl_r": "cmd_r"}
 
-OLD_RECEIVER_STATUS ="The Mac did not answer the handshake — it is probably running an older Beamer; update it"
-AUTH_FAILED_STATUS = "The Mac could not be authenticated — check the shared token matches on both sides"
+_OLD_RECEIVER = "The {name} did not answer the handshake — it is probably running an older Beamer; update it"
+_AUTH_FAILED = "The {name} could not be authenticated — check the shared token matches on both sides"
+WAKING_STATUS, NOT_WOKEN_STATUS, OLD_RECEIVER_STATUS, AUTH_FAILED_STATUS = (
+    peers.MAC.say(template) for template in (_WAKING, _NOT_WOKEN, _OLD_RECEIVER, _AUTH_FAILED))
 
 
 class HandshakeError(protocol.ProtocolError):
@@ -185,7 +190,9 @@ class MacSender:
         self._stop_event = threading.Event()
         self._threads = []
 
-        self._status = "Not connected to the Mac"
+        # What is at the other end, for the words in every status; the app sets it from the hello.
+        self.peer = peers.MAC
+        self._status = self.peer.say(NOT_CONNECTED)
         # Keys whose down-stroke went to the Mac and whose release has not: a
         # dict, not a set, only so the hook thread's pop() stays one operation.
         self._keys_down: dict = {}
@@ -364,7 +371,7 @@ class MacSender:
                 self._keys_down.pop(held, None)
             return True
         if not self._link_live():
-            self._force_local("the link to the Mac went quiet")
+            self._force_local(f"the link to the {self.peer.name} went quiet")
             return False
         if vk is not None and self._ignore_gate.keeps(ignored.key(vk), down):
             return False
@@ -389,10 +396,18 @@ class MacSender:
             data["us"] = us
         return data
 
+    def set_peer(self, peer) -> None:
+        """Names `peer` in every status from now on, the one showing while idle included."""
+        if self._status == self.peer.say(NOT_CONNECTED):
+            self._status = peer.say(NOT_CONNECTED)
+        self.peer = peer
+
     def _wire_name(self, name: str) -> str:
         """The capture names Ctrl "cmd" and the Windows key "ctrl", the Semantic style;
-        Positional swaps them back, so each key arrives as the Mac key in its place."""
-        if self._setting("modifier_style", "semantic") == "positional":
+        Positional swaps them back, so each key arrives as the Mac key in its place. A Linux
+        computer is always Positional: its Ctrl is the shortcut key, so Semantic would turn Ctrl+C
+        into Super+C there."""
+        if self.peer.platform == "linux" or self._setting("modifier_style", "semantic") == "positional":
             return POSITIONAL_SWAP.get(name, name)
         return name
 
@@ -412,7 +427,7 @@ class MacSender:
         if not self.redirecting:
             return False
         if not self._link_live():
-            self._force_local("the link to the Mac went quiet")
+            self._force_local(f"the link to the {self.peer.name} went quiet")
             return False
         if message == capture_win.WM_MOUSEMOVE:
             # Swallowed, and the pointer put back where it was: a hook that
@@ -428,7 +443,7 @@ class MacSender:
         keeps the movement off this PC."""
         if self.redirecting:
             if not self._link_live():
-                self._force_local("the link to the Mac went quiet")
+                self._force_local(f"the link to the {self.peer.name} went quiet")
                 return
             self._enqueue({"type": protocol.MSG_MOUSEMOVE, "data": {"dx": int(dx), "dy": int(dy)}})
             return
@@ -511,7 +526,7 @@ class MacSender:
                 send_home = self.send_peer_home
                 if send_home is None or not send_home():
                     LOGGER.warning("cannot cross: the Mac is driving this PC and cannot be reached")
-                    self._alert("Cannot switch — the Mac is driving this PC and cannot be reached")
+                    self._alert(f"Cannot switch — the {self.peer.name} is driving this PC and cannot be reached")
                     return
                 self._receiving = False
             # The model names the edge on the far side, not the one just left:
@@ -560,7 +575,7 @@ class MacSender:
                 if send_home is not None and send_home():
                     return True
                 LOGGER.warning("cannot redirect: the Mac is driving this PC and cannot be reached")
-                self._alert("Cannot switch — the Mac is driving this PC and cannot be reached")
+                self._alert(f"Cannot switch — the {self.peer.name} is driving this PC and cannot be reached")
                 return False
             self.redirecting = True
             self._pin_point = self._desktop_module().cursor_position()
@@ -656,7 +671,7 @@ class MacSender:
     def _connect_once(self, config) -> bool:
         host, port = self._address(config)
         sock = None
-        self._set_status(f"Connecting to the Mac at {host}:{port}")
+        self._set_status(f"Connecting to the {self.peer.name} at {host}:{port}")
         try:
             sock = self._socket_factory((host, port), CONNECT_TIMEOUT_SECONDS)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -667,10 +682,10 @@ class MacSender:
             try:
                 protocol.recv_preamble(sock, session)
             except socket.timeout:
-                raise HandshakeError(OLD_RECEIVER_STATUS) from None
+                raise HandshakeError(self.peer.say(_OLD_RECEIVER)) from None
             except protocol.VersionMismatch as exc:
                 raise HandshakeError(
-                    f"The Mac speaks Beamer protocol v{exc.peer_version}, this PC v{protocol.PROTOCOL_VERSION} — update both apps"
+                    f"The {self.peer.name} speaks Beamer protocol v{exc.peer_version}, this PC v{protocol.PROTOCOL_VERSION} — update both apps"
                 ) from None
             protocol.send_msg(
                 sock,
@@ -683,14 +698,14 @@ class MacSender:
                 reply = protocol.recv_msg(sock, session)
             except (protocol.ConnectionClosed, protocol.AuthenticationError):
                 # The receiver closes without a word when a frame fails to authenticate.
-                raise HandshakeError(AUTH_FAILED_STATUS) from None
+                raise HandshakeError(self.peer.say(_AUTH_FAILED)) from None
             if reply.get("type") != protocol.MSG_WELCOME:
-                raise protocol.ProtocolError("the Mac did not confirm authentication")
+                raise protocol.ProtocolError(f"the {self.peer.name} did not confirm authentication")
             data = reply.get("data")
             if not isinstance(data, dict):
                 raise protocol.ProtocolError("welcome message missing data")
             if data.get("error") or data.get("version") != protocol.PROTOCOL_VERSION:
-                raise HandshakeError(OLD_RECEIVER_STATUS)
+                raise HandshakeError(self.peer.say(_OLD_RECEIVER))
             sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         except HandshakeError as exc:
             self._close(sock)
@@ -699,7 +714,7 @@ class MacSender:
             return False
         except (OSError, protocol.ProtocolError) as exc:
             self._close(sock)
-            self._set_status(f"The Mac is not reachable on {host}:{port}")
+            self._set_status(f"The {self.peer.name} is not reachable on {host}:{port}")
             LOGGER.debug("connection to the Mac failed: %s", exc)
             return False
         with self._socket_lock:
@@ -719,7 +734,7 @@ class MacSender:
             self._round_trip_at = 0.0
         self._connected_at = now
         self._last_send_at = now
-        self._set_status(f"Connected to the Mac at {host}")
+        self._set_status(f"Connected to the {self.peer.name} at {host}")
         LOGGER.info("connected to the Mac at %s:%s", host, port)
         self._learn_mac_address(host)
         return True
@@ -747,7 +762,7 @@ class MacSender:
         does for the PC. Nothing is queued: the person switches again once the Mac is up. False
         when there is no address to wake or a wake is already in flight."""
         address = self._setting("mac_hardware_address", "")
-        if not address or self.connected or self._status in (AUTH_FAILED_STATUS, OLD_RECEIVER_STATUS) \
+        if not address or self.connected or self._status in (self.peer.say(_AUTH_FAILED), self.peer.say(_OLD_RECEIVER)) \
                 or "protocol v" in self._status:
             # A Mac that answered and refused is awake; waking it would hide why.
             return False
@@ -768,12 +783,12 @@ class MacSender:
             self._alert("Could not send the wake-up packet")
             return
         LOGGER.info("sent wake-on-LAN to the Mac")
-        self._alert(WAKING_STATUS)
+        self._alert(self.peer.say(_WAKING))
         while not self._stop_event.wait(WAKE_POLL_SECONDS):
             if self.connected:
                 self._waking = False
                 LOGGER.info("the Mac woke and connected")
-                self._alert("Your Mac is awake — switch again to send input")
+                self._alert(f"Your {self.peer.name} is awake — switch again to send input")
                 return
             if self._clock() - started >= wol.WAKE_WINDOW_SECONDS:
                 break
@@ -781,7 +796,7 @@ class MacSender:
         if self._stop_event.is_set():
             return
         LOGGER.warning("the Mac did not answer within %.0fs of the wake-on-LAN packet", wol.WAKE_WINDOW_SECONDS)
-        self._alert(NOT_WOKEN_STATUS)
+        self._alert(self.peer.say(_NOT_WOKEN))
 
     def _alert(self, message: str) -> None:
         if self.on_alert is None:
@@ -857,7 +872,7 @@ class MacSender:
                 self._last_send_at = self._clock()
                 return True
             except (OSError, protocol.ProtocolError) as exc:
-                self._connection_failed(f"Sending to the Mac failed: {exc}", expected_socket=sock)
+                self._connection_failed(f"Sending to the {self.peer.name} failed: {exc}", expected_socket=sock)
                 return False
 
     def _reader_worker(self) -> None:
@@ -878,27 +893,27 @@ class MacSender:
             except socket.timeout:
                 continue
             except OSError as exc:
-                self._connection_failed(f"Receiving from the Mac failed: {exc}", expected_socket=sock)
+                self._connection_failed(f"Receiving from the {self.peer.name} failed: {exc}", expected_socket=sock)
                 active_socket = None
                 continue
             if not chunk:
-                self._connection_failed("The Mac closed the connection", expected_socket=sock)
+                self._connection_failed(f"The {self.peer.name} closed the connection", expected_socket=sock)
                 active_socket = None
                 continue
             try:
                 for message in decoder.feed(chunk):
                     self._handle_inbound(message)
             except protocol.AuthenticationError:
-                self._connection_failed(AUTH_FAILED_STATUS, expected_socket=sock)
+                self._connection_failed(self.peer.say(_AUTH_FAILED), expected_socket=sock)
                 active_socket = None
             except protocol.ProtocolError as exc:
-                self._connection_failed(f"Invalid stream from the Mac: {exc}", expected_socket=sock)
+                self._connection_failed(f"Invalid stream from the {self.peer.name}: {exc}", expected_socket=sock)
                 active_socket = None
             except Exception as exc:
                 # The same outcome as a malformed frame: this connection goes,
                 # the thread stays, and the next connection gets a reader.
                 LOGGER.exception("inbound handling failed")
-                self._connection_failed(f"Inbound message from the Mac failed: {exc}", expected_socket=sock)
+                self._connection_failed(f"Inbound message from the {self.peer.name} failed: {exc}", expected_socket=sock)
                 active_socket = None
 
     def _handle_inbound(self, message) -> None:
@@ -983,7 +998,7 @@ class MacSender:
         with self._sequence_lock:
             last_heartbeat = max(self._last_ack_at, self._connected_at)
         if now - last_heartbeat > ACK_TIMEOUT_SECONDS:
-            self._connection_failed("The Mac stopped responding")
+            self._connection_failed(f"The {self.peer.name} stopped responding")
             return True
         if now - self._last_send_at >= PING_INTERVAL_SECONDS:
             self._send_raw(protocol.ping_msg())
@@ -995,7 +1010,7 @@ class MacSender:
         try:
             self._outbound.put_nowait(message)
         except queue.Full:
-            self._force_local("the outbound queue to the Mac filled up")
+            self._force_local(f"the outbound queue to the {self.peer.name} filled up")
 
     def _enqueue_control(self, message) -> None:
         try:
