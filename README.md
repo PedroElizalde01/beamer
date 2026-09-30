@@ -23,6 +23,7 @@ Free, with no account. Every installer is on the [releases page](https://github.
 | macOS 13 or later, Apple silicon | `Beamer-<version>.dmg` | Signed and notarised by Apple. Not for Intel Macs |
 | Windows 10 and 11 | `Beamer-Setup-<version>.exe` | Not code-signed; see step 1 below |
 | Windows, through winget | `winget install KalkmanCode.Beamer` | The same installer, without the warning |
+| Linux (X11), in this fork | From source: see [linux_app/README.md](linux_app/README.md) | Takes the Mac's place opposite the PC. Not on Wayland yet |
 
 ## Quick start
 

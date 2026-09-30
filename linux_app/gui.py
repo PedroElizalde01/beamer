@@ -13,8 +13,8 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
@@ -75,6 +75,25 @@ def icon_path(root):
         if candidate.exists():
             return candidate
     return None
+
+
+def status_icon(path, tone, size=64):
+    """The mark with the link's dot over its lower right corner, as the Windows tray draws it."""
+    pixmap = QIcon(str(path)).pixmap(QSize(size, size), 1.0) if path else QPixmap()
+    if pixmap.isNull() or pixmap.width() != size:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(theme.colour("panel")))
+    unit = size / 16
+    dot = 6 * unit
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(theme.colour("ground")))
+    painter.drawEllipse(QRectF(size - dot - 2 * unit, size - dot - 2 * unit, dot + 2 * unit, dot + 2 * unit))
+    painter.setBrush(QColor(theme.colour(tone)))
+    painter.drawEllipse(QRectF(size - dot - unit, size - dot - unit, dot, dot))
+    painter.end()
+    return QIcon(pixmap)
 
 
 def set_autostart(on, root):
@@ -498,8 +517,8 @@ class Window(QWidget):
             tone, word = "amber", "Crossing is paused"
         self.where_led.set_tone(tone)
         self.where_word.setText(word)
-        self.sidebar.set_link("signal" if app.link.connected else "amber" if app.paired else "off",
-                              "Linked" if app.link.connected else "Not linked" if app.paired else "Not paired")
+        link_tone = "signal" if app.link.connected else "amber" if app.paired else "off"
+        self.sidebar.set_link(link_tone, "Linked" if app.link.connected else "Not linked" if app.paired else "Not paired")
         self.link_line.setText(f"To your PC: {app.link_status}")
         self.receiver_line.setText(f"From your PC: {app.receiver_status}")
         self.send_button.setText("Bring input back" if app.where != "here" else "Send input to your PC")
@@ -509,6 +528,9 @@ class Window(QWidget):
         token = cfg.auth_token or ""
         self.token_line.setText(token if self.show_token.isChecked() else "•" * min(len(token), 24) or "None")
         if hasattr(self, "tray"):
+            if link_tone != self._tray_tone:
+                self._tray_tone = link_tone
+                self.tray.setIcon(status_icon(icon_path(self.root), link_tone))
             self.tray.setToolTip(f"Beamer: {word}")
             self.status_action.setText(word)
             self.toggle_action.setText(self.send_button.text())
@@ -567,6 +589,7 @@ class Window(QWidget):
             self.tray_missing = True
             return
         self.tray_missing = False
+        self._tray_tone = None
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
         menu = QMenu()
         menu.addAction(f"Beamer {self.version}").setEnabled(False)
