@@ -22,7 +22,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # 3.13: its time.monotonic() on Windows is QueryPerformanceCounter. 3.12's ticks every
+          # ~15.6 ms, and test_edge_glow's hover test then reads 0.1 s of intent as 0.0999… and fails.
+          python-version: "3.13"
       - name: Python packages
         run: python -m pip install -r requirements-win.txt
       - name: Windows tests
